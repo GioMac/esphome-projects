@@ -1,0 +1,440 @@
+#
+# esphome yaml for tuya-based underfloow heating thermostats like, moes, hy609 etc with ntc support
+#
+substitutions:
+  DEFAULT_OFFSET: "-9.5"   # RAW? we don't even know if its offset or what it is, but if not set -9.5 something goes way off
+  MIN_SETPOINT: "18"
+  MAX_SETPOINT: "45"
+
+esphome:
+  name: "thermostat-221480"
+  friendly_name: "XRoom Thermostat"
+  on_boot:
+    priority: -10 
+    then:
+      - delay: 10s
+      - lambda: |-
+          // ✅ Force Temperature Offset once (example: +1.5°C)
+          const float INIT_OFFSET = atof("${DEFAULT_OFFSET}");
+          int raw_offset = lroundf(INIT_OFFSET * 10.0f) + 100;  // map to raw 0..200
+          id(thermostat_tuya)->set_integer_datapoint_value(115, raw_offset);
+
+          // Push YAML limits into device DPs on startup, if you want
+          //id(thermostat_tuya)->set_integer_datapoint_value(113, atoi("${MIN_SETPOINT}"));
+          //id(thermostat_tuya)->set_integer_datapoint_value(112, atoi("${MAX_SETPOINT}"));
+
+          //id(thermostat_tuya)->set_boolean_datapoint_value(108, true);
+
+          // Build 9-byte schedules (hour, minute, temperature)
+          std::vector<uint8_t> sched23(9, 0);
+
+          // Example: keep all slots but force temperature=23
+          // DP119
+          //sched23 = {0x06,0x00,23, 0x08,0x00,23, 0x0A,0x1E,23};
+          //id(thermostat_tuya)->set_raw_datapoint_value(119, sched23);
+
+          // DP120
+          //sched23 = {0x0D,0x1E,23, 0x11,0x00,23, 0x16,0x00,23};
+          //id(thermostat_tuya)->set_raw_datapoint_value(120, sched23);
+
+          // DP121
+          //sched23 = {0x06,0x00,23, 0x08,0x00,23, 0x0B,0x1E,23};
+          //id(thermostat_tuya)->set_raw_datapoint_value(121, sched23);
+
+          // DP122
+          //sched23 = {0x0D,0x1E,23, 0x11,0x00,23, 0x16,0x00,23};
+          //id(thermostat_tuya)->set_raw_datapoint_value(122, sched23);
+
+          const char* model =
+          #if defined(CONFIG_IDF_TARGET_ESP32)
+            "ESP32";
+          #elif defined(CONFIG_IDF_TARGET_ESP32S2)
+            "ESP32-S2";
+          #elif defined(CONFIG_IDF_TARGET_ESP32S3)
+            "ESP32-S3";
+          #elif defined(CONFIG_IDF_TARGET_ESP32C3)
+            "ESP32-C3";
+          #elif defined(CONFIG_IDF_TARGET_ESP32C6)
+            "ESP32-C6";
+          #elif defined(CONFIG_IDF_TARGET_ESP32H2)
+            "ESP32-H2";
+          #else
+            "Unknown";
+          #endif
+          id(chip_model_text).publish_state(model);
+
+#1 - on/off
+#2 - target temp
+#3 - current temp
+#4 - manual=0/schedule(auto,program)=1/away=2
+#6 - child lock
+#12 - fault
+#101 - eco?
+#102 - heating active
+#103 - floor temp
+#104 - sensor source
+#105 - temp while away
+#106 - schedules?
+#107 - schedules?
+#108 - schedules?
+#109 - antifreeze / low-temp protect setpoint (int, °C).?
+#110 - hysteresis?
+#111 - schedules?
+#112 - setpoint min
+#113 - setpoint max
+#114 - limit?
+#115 - offset? scary, be careful
+#116 - schedules?
+#117 - schedules?
+#118 - schedules?
+#119 - schedules
+#120 - schedules
+#121 - schedules
+#122 - schedules
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  baud_rate: 0
+
+web_server:
+
+mdns:
+  disabled: false
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_pass
+  ap:
+    ssid: "thermostat-221480"
+    password: !secret wifi_pass
+
+api:
+#  password: !secret api_pass
+
+ota:
+  platform: esphome
+  password: !secret ota_pass
+
+esp32_ble_tracker:
+
+bluetooth_proxy:
+  active: true
+
+uart:
+  id: dev_uart
+  tx_pin: GPIO9
+  rx_pin: GPIO8
+  baud_rate: 9600   # try 115200 if 9600 fails
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "Asia/Tbilisi"   # UTC+04:00, no DST
+    servers:
+     - 10.0.0.200
+
+# --- Climate (correct scaling) ---
+climate:
+  - platform: tuya
+    name: "Thermostat"
+    id: thermostat
+    switch_datapoint: 1
+    target_temperature_datapoint: 2
+    current_temperature_datapoint: 3
+    temperature_multiplier: 0.1
+    supports_heat: true
+    supports_cool: false
+    #This makes action follow the relay (DP102)
+    active_state:
+      datapoint: 102
+      heating_value: 1
+    visual:
+      min_temperature: 18
+      max_temperature: 28
+      temperature_step: 0.5
+
+# Panel child-lock
+switch:
+  - platform: tuya
+    name: "Child Lock"
+    switch_datapoint: 6
+    entity_category: config
+  - platform: restart
+    name: "Reboot"
+    id: thermostat_reboot
+    entity_category: diagnostic
+
+# Manual / Program mode selector (DP4)
+select:
+  - platform: tuya
+    name: "Mode"
+    enum_datapoint: 4
+    options:
+      0: Manual
+      1: Program
+      2: Away
+    entity_category: config
+
+# Heating active (relay) as binary sensor from DP102
+binary_sensor:
+  - platform: tuya
+    name: "Heating Active"
+    sensor_datapoint: 102
+    device_class: heat
+
+  - platform: tuya
+    name: "Thermostat Safety"
+    sensor_datapoint: 12
+    device_class: safety
+    icon: mdi:thermometer-alert
+    entity_category: diagnostic
+
+  - platform: template
+    name: "Floor Limit Active"
+    device_class: safety
+    icon: mdi:thermometer-alert
+    lambda: |-
+      const float t = id(thermostat_floor_temp).state;
+      const float lim = id(thermostat_floor_limit).state;
+      if (isnan(t) || isnan(lim)) return false;
+      return t >= lim - 0.05;
+    filters:
+      - delayed_on: 30s
+      - delayed_off: 10s
+
+sensor:
+#  - platform: one_wire
+#    one_wire_id: dsbus
+#    index: 0
+#    name: "DS18B20 #0"
+#    id: ds18b20_0
+#    device_class: temperature
+#    unit_of_measurement: "°C"
+#    accuracy_decimals: 1
+#    filters:
+#      - median:
+#          window_size: 7
+#          send_every: 3
+#          send_first_at: 1
+
+  # Floor probe live temperature (DP103, scale 0.1)
+  - platform: tuya
+    id: thermostat_floor_temp
+    name: "Floor Temperature"
+    sensor_datapoint: 103
+    device_class: temperature
+    state_class: measurement
+    unit_of_measurement: "°C"
+    filters:
+      - multiply: 0.1
+      # - throttle_average: 30s  # optional smoothing
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    id: ufh_wifi_rssi
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: tuya
+    name: "Temperature Offset? (°C)"
+    sensor_datapoint: 115
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    filters:
+      - lambda: |-
+          // DP115 raw 0..200  →  -10.0..+10.0 °C (bias 100, tenths)
+          return (x - 100) / 10.0f;
+
+  - platform: tuya
+    name: "Antifreeze?"
+    sensor_datapoint: 109
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    entity_category: diagnostic
+
+number:
+  - platform: tuya
+    name: "Max Setpoint °C"
+    number_datapoint: 112
+    min_value: 20
+    max_value: ${MAX_SETPOINT}
+    step: 1
+    unit_of_measurement: "°C"
+    entity_category: config
+
+  - platform: tuya
+    name: "Min Setpoint °C"
+    number_datapoint: 113
+    min_value: 5
+    max_value: 20
+    step: 1
+    unit_of_measurement: "°C"
+    entity_category: config
+
+  # Limit (DP19)
+  - platform: tuya
+    id: thermostat_floor_limit
+    name: "Limit °C"
+    number_datapoint: 114
+    min_value: 20
+    max_value: 60
+    step: 1
+    unit_of_measurement: "°C"
+    entity_category: config
+
+  - platform: tuya
+    name: "Away Temperature"
+    number_datapoint: 105
+    min_value: 10
+    max_value: 25
+    unit_of_measurement: "°C"
+    step: 1
+    entity_category: config
+
+  # Hysteresis (DP110 is x0.1) – template number writes INT to DP110
+  - platform: template
+    name: "Hysteresis °C"
+    id: thermostat_hyst
+    min_value: 0.5
+    max_value: 5.0
+    step: 0.5
+    unit_of_measurement: "°C"
+    entity_category: config
+    set_action:
+      - lambda: |-
+          // write DP110 as tenths of a degree
+          const int v = (int) roundf(x * 10.0f);
+          id(thermostat_tuya)->set_integer_datapoint_value(110, v);
+
+# Schedule RAWs + diagnostics (and read-only Sensor Source)
+text_sensor:
+  - platform: template
+    id: chip_model_text
+    name: "ESP Chip Model"
+    entity_category: diagnostic
+    update_interval: never  # we push once at boot
+  - platform: template
+    id: sched_119
+    name: "Schedule 119 (raw)"
+    internal: true           # <— hidden from HA
+    entity_category: diagnostic
+  - platform: template
+    id: sched_120
+    name: "Schedule 120 (raw)"
+    internal: true           # <— hidden from HA
+    entity_category: diagnostic
+  - platform: template
+    id: sched_121
+    name: "Schedule 121 (raw)"
+    internal: true           # <— hidden from HA
+    entity_category: diagnostic
+  - platform: template
+    id: sched_122
+    name: "Schedule 122 (raw)"
+    internal: true           # <— hidden from HA
+    entity_category: diagnostic
+
+  - platform: template
+    id: setpoint_limits_diag
+    name: "Setpoint Limits (min/max)"
+    internal: true           # <— hidden from HA
+    entity_category: diagnostic
+
+  # READ-ONLY view of DP104 (no writing)
+  - platform: template
+    id: sensor_source_text
+    name: "Sensor Source"
+    entity_category: diagnostic
+
+  - platform: template
+    id: sensor_source_raw
+    name: "Sensor Source (raw)"
+    internal: true           # <— hidden from HA
+    entity_category: diagnostic
+
+# Tuya hub + DP handlers
+tuya:
+  id: thermostat_tuya
+  uart_id: dev_uart
+  time_id: sntp_time
+  on_datapoint_update:
+    - datapoint_type: int
+      sensor_datapoint: 110
+      then:
+        - lambda: |-
+            id(thermostat_hyst).publish_state(x / 10.0f);
+
+    - datapoint_type: raw
+      sensor_datapoint: 119
+      then:
+        - lambda: |-
+            char buf[64]; int n = 0;
+            for (size_t i = 0; i < x.size() && n < 62; i++) n += sprintf(buf + n, "%02X.", x[i]);
+            if (n > 0) buf[n-1] = 0;
+            id(sched_119).publish_state(buf);
+
+    - datapoint_type: raw
+      sensor_datapoint: 120
+      then:
+        - lambda: |-
+            char buf[64]; int n = 0;
+            for (size_t i = 0; i < x.size() && n < 62; i++) n += sprintf(buf + n, "%02X.", x[i]);
+            if (n > 0) buf[n-1] = 0;
+            id(sched_120).publish_state(buf);
+
+    - datapoint_type: raw
+      sensor_datapoint: 121
+      then:
+        - lambda: |-
+            char buf[64]; int n = 0;
+            for (size_t i = 0; i < x.size() && n < 62; i++) n += sprintf(buf + n, "%02X.", x[i]);
+            if (n > 0) buf[n-1] = 0;
+            id(sched_121).publish_state(buf);
+
+    - datapoint_type: raw
+      sensor_datapoint: 122
+      then:
+        - lambda: |-
+            char buf[64]; int n = 0;
+            for (size_t i = 0; i < x.size() && n < 62; i++) n += sprintf(buf + n, "%02X.", x[i]);
+            if (n > 0) buf[n-1] = 0;
+            id(sched_122).publish_state(buf);
+
+    - datapoint_type: int
+      sensor_datapoint: 104
+      then:
+        - lambda: |-
+            // Show the raw code
+            id(sensor_source_raw).publish_state(std::to_string(x));
+            // Map codes -> label. Adjust if your panel uses a different order.
+            const char* s =
+              (x == 0) ? "Both" :
+              (x == 1) ? "Floor"  :
+                         "Air";
+            id(sensor_source_text).publish_state(s);
+
+    - datapoint_type: int
+      sensor_datapoint: 114
+      then:
+        - lambda: |-
+            ESP_LOGI("tuya.floor_limit", "Floor limit now %d °C (DP114)", x);
+
+    - datapoint_type: int
+      sensor_datapoint: 113
+      then:
+        - lambda: |-
+            if (x != atoi("${MIN_SETPOINT}")) ESP_LOGW("limits","Panel min=%d differs from YAML %s", x, "${MIN_SETPOINT}");
+            id(setpoint_limits_diag).publish_state("min=" + std::to_string(x));
+    - datapoint_type: int
+      sensor_datapoint: 112
+      then:
+        - lambda: |-
+            if (x != atoi("${MAX_SETPOINT}")) ESP_LOGW("limits","Panel max=%d differs from YAML %s", x, "${MAX_SETPOINT}");
+            id(setpoint_limits_diag).publish_state("min=" + id(setpoint_limits_diag).state + " max=" + std::to_string(x));
+
